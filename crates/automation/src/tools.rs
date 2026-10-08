@@ -1002,6 +1002,13 @@ pub fn tools() -> Vec<ToolDef> {
                     "scale": { "type": "number", "description": "Horizontal scale in percent." } }),
                 &["doc", "page"],
             )),
+        t("text_arrange", "Arrange text", "Move one paragraph (from text_paragraphs) in the page's stacking order among what it overlaps: action bring_to_front, bring_forward, send_backward or send_to_back. Its look and place don't change, nor does any other text. Paragraph numbers can change; list again with text_paragraphs. Undoable.")
+            .cmd("edit.edit_text")
+            .with(schema(
+                json!({ "doc": doc(), "page": { "type": "integer", "minimum": 1 }, "paragraph": { "type": "integer", "minimum": 1 },
+                    "action": { "type": "string", "enum": ["bring_to_front", "bring_forward", "send_backward", "send_to_back"] } }),
+                &["doc", "page", "paragraph", "action"],
+            )),
         t("doc_revisions", "List revisions", "List the document's saved revisions (oldest first): each incremental update is one. Returns revision number, where it ends in the file and its size, and which signatures sign exactly that revision.")
             .with(schema(json!({ "doc": doc() }), &["doc"])),
         t("doc_open_revision", "Open a revision", "Open saved revision `revision` (1 = the oldest) of a document as a new, unsaved document, to see the file as it was then.")

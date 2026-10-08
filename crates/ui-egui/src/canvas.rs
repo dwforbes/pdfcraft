@@ -248,6 +248,8 @@ pub struct DocView {
     /// Edit text & images: the images per page (by document generation), and the selected one.
     pub(crate) edit_images: HashMap<usize, (u64, Vec<pdfcraft_engine::PageImage>)>,
     pub image_selection: Option<crate::edit_text_ui::ImageSelection>,
+    /// Edit text & images: the paragraph whose right-click menu is open (page, paragraph).
+    pub block_menu: Option<(usize, usize)>,
     /// A paragraph box being dragged (moved, or resized from its right edge) in Edit text.
     pub block_drag: Option<crate::edit_text_ui::BlockDrag>,
     /// Commenting state: selected comment, gestures, composer.
@@ -365,6 +367,7 @@ impl DocView {
             line_editor: None,
             edit_images: HashMap::new(),
             image_selection: None,
+            block_menu: None,
             block_drag: None,
             pending_action: None,
             comments: Default::default(),
@@ -1277,7 +1280,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let by_line = app.session.stamp_by_line(&author);
     let mut stamp_placed = false;
     let mut image_action: Option<crate::edit_text_ui::ImageAction> = None;
-    // The selected image's context menu is showing: it, not the page's, answers the right-click.
+    // An image's or paragraph's context menu is showing: it, not the page's, answers the right-click.
     let mut image_menu = false;
     let custom_stamp = match app.quick_tool {
         QuickTool::CustomStamp(i) => app.custom_stamps.get(i).cloned(),
@@ -1554,8 +1557,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     }
                 };
                 // Images first (they can sit under text boxes' corners); then paragraphs.
-                crate::edit_text_ui::image_input(ui, &resp, &xf, i, info, &images, view, &mut image_action, &mut image_menu)
-                    || crate::edit_text_ui::page_input(ui, &resp, &xf, i, info, &lines, view)
+                let used = crate::edit_text_ui::image_input(ui, &resp, &xf, i, info, &images, view, &mut image_action, &mut image_menu)
+                    || crate::edit_text_ui::page_input(ui, &resp, &xf, i, info, &lines, view);
+                crate::edit_text_ui::block_menu(ui, &resp, &xf, info, i, &lines, view, &mut image_menu);
+                used
             };
             let on_link = tool == QuickTool::Link && can_modify && crate::link_ui::page_input(ui, &resp, &xf, i, info, &doc_links, view);
             let consumed = on_edit_text || on_link || on_content || boxing || on_field || comments::page_input(ui, &resp, &pcx, view);

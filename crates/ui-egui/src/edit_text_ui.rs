@@ -1,7 +1,7 @@
 //! Edit a PDF ▸ Edit text & images: boxes around the paragraphs and images already on the page.
 //! Click a paragraph to edit it in place (⌘Enter or clicking away applies and rewraps it to the
 //! box, Esc cancels); drag it to move it, or drag the handle on its right edge to rewrap it to a
-//! new width. Click an image to select it: drag to move, drag a corner to resize (keeping
+//! new width; right-click it to edit it or arrange it (bring to front … send to back). Click an image to select it: drag to move, drag a corner to resize (keeping
 //! its proportions), right-click for rotate, flip, arrange (bring to front, bring forward, send
 //! backward, send to back), replace, save and delete; Delete removes it.
 
@@ -456,31 +456,91 @@ pub(crate) fn page_input(
         return true;
     }
     if resp.clicked() {
-        let l = &lines[hit];
-        // Screen pixels per point, from the box's width.
-        let scale = (boxes[hit].width() - 4.0) / ((l.rect[2] - l.rect[0]).max(1.0) as f32);
-        // How far the editor box may grow: a single-line paragraph's rewrite grows to the
-        // page's right edge, a multi-line paragraph rewraps to its own width.
-        let right = xf.rect.right().min(view.viewport_rect().right()) - 6.0;
-        let max_width = if l.lines.len() == 1 { (right - boxes[hit].left()).max(boxes[hit].width()) } else { boxes[hit].width() };
-        view.line_editor = Some(LineEditor {
-            page,
-            block: hit,
-            text: l.text.clone(),
-            original: l.text.clone(),
-            rect: boxes[hit],
-            source_rect: l.rect.map(|v| v as f32),
-            multiline: l.lines.len() > 1,
-            max_width,
-            size: (l.size as f32 * scale).clamp(8.0, 72.0),
-            focus: true,
-            look: look_of(l),
-            look0: look_of(l),
-            extras: Extras::default(),
-            extras0: Extras::default(),
-        });
+        open_editor(xf, page, lines, hit, boxes[hit], view);
     }
     true
+}
+
+/// Open paragraph `block` (on screen at `b`) for editing in place.
+fn open_editor(xf: &PageXform, page: usize, lines: &[pdfcraft_engine::TextBlock], block: usize, b: Rect, view: &mut DocView) {
+    let Some(l) = lines.get(block) else { return };
+    // Screen pixels per point, from the box's width.
+    let scale = (b.width() - 4.0) / ((l.rect[2] - l.rect[0]).max(1.0) as f32);
+    // How far the editor box may grow: a single-line paragraph's rewrite grows to the page's
+    // right edge, a multi-line paragraph rewraps to its own width.
+    let right = xf.rect.right().min(view.viewport_rect().right()) - 6.0;
+    let max_width = if l.lines.len() == 1 { (right - b.left()).max(b.width()) } else { b.width() };
+    view.line_editor = Some(LineEditor {
+        page,
+        block,
+        text: l.text.clone(),
+        original: l.text.clone(),
+        rect: b,
+        source_rect: l.rect.map(|v| v as f32),
+        multiline: l.lines.len() > 1,
+        max_width,
+        size: (l.size as f32 * scale).clamp(8.0, 72.0),
+        focus: true,
+        look: look_of(l),
+        look0: look_of(l),
+        extras: Extras::default(),
+        extras0: Extras::default(),
+    });
+}
+
+/// A paragraph's right-click menu: Edit Text and Arrange. It belongs to the paragraph from the
+/// right-click until it closes, wherever the pointer goes; `menu` is set while it shows (and, on
+/// entry, says another object's menu already took the right-click).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn block_menu(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    xf: &PageXform,
+    info: &DocInfo,
+    page: usize,
+    lines: &[pdfcraft_engine::TextBlock],
+    view: &mut DocView,
+    menu: &mut bool,
+) {
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(resp));
+    if resp.secondary_clicked() && !*menu && view.line_editor.is_none() {
+        let p = ui.input(|i| i.pointer.interact_pos()).filter(|p| xf.rect.contains(*p));
+        let hit = p.and_then(|p| lines.iter().rposition(|l| xf.user_rect(info, page, l.rect.map(|v| v as f32)).expand(2.0).contains(p)));
+        match hit {
+            Some(block) => view.block_menu = Some((page, block)),
+            None if view.block_menu.is_some_and(|m| m.0 == page) => view.block_menu = None,
+            None => {}
+        }
+    } else if !open && view.block_menu.is_some_and(|m| m.0 == page) {
+        view.block_menu = None;
+    }
+    let Some((_, block)) = view.block_menu.filter(|m| m.0 == page && m.1 < lines.len()) else { return };
+    *menu = true;
+    resp.context_menu(|ui| {
+        if ui.button(tl!("Edit text")).clicked() {
+            let b = lines.get(block).map(|l| xf.user_rect(info, page, l.rect.map(|v| v as f32)).expand(2.0));
+            if let Some(b) = b {
+                open_editor(xf, page, lines, block, b, view);
+            }
+            view.block_menu = None;
+            ui.close();
+        }
+        ui.menu_button(tl!("Arrange"), |ui| {
+            use pdfcraft_engine::Arrange as A;
+            for (label, how) in [
+                (tl!("Bring to Front"), A::BringToFront),
+                (tl!("Bring Forward"), A::BringForward),
+                (tl!("Send Backward"), A::SendBackward),
+                (tl!("Send to Back"), A::SendToBack),
+            ] {
+                if ui.button(label).clicked() {
+                    view.pending_edit = Some(Edit::ArrangeTextBlock { page, block, how });
+                    view.block_menu = None;
+                    ui.close();
+                }
+            }
+        });
+    });
 }
 
 /// The inline editor; returns the edit once the text is applied.

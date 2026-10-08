@@ -947,6 +947,13 @@ pub enum Edit {
         /// Formatting changes (font, size, colour, alignment); default keeps the paragraph's.
         style: pdfcraft_edit::BlockStyle,
     },
+    /// Edit text ▸ Arrange: move paragraph `block` (from `Document::text_blocks`) in the stacking
+    /// order.
+    ArrangeTextBlock {
+        page: usize,
+        block: usize,
+        how: Arrange,
+    },
     /// Order tabs manually: move a field one place earlier or later on its page.
     MoveInTabOrder {
         name: String,
@@ -1123,6 +1130,12 @@ impl Edit {
             Edit::SetDocumentScript { script: None, .. } => "Delete document JavaScript".into(),
             Edit::SetDocumentScript { .. } => "Edit document JavaScript".into(),
             Edit::EditTextLine { .. } | Edit::EditTextBlock { .. } => "Edit text".into(),
+            Edit::ArrangeTextBlock { how, .. } => match how {
+                Arrange::BringToFront => "Bring text to front".into(),
+                Arrange::BringForward => "Bring text forward".into(),
+                Arrange::SendBackward => "Send text backward".into(),
+                Arrange::SendToBack => "Send text to back".into(),
+            },
             Edit::EditPageImage { change, .. } => match change {
                 ImageEdit::Move(_) => "Move image".into(),
                 ImageEdit::Rotate(_) => "Rotate image".into(),
@@ -1301,6 +1314,7 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::ConvertPdfA { .. }
         | Edit::EditTextLine { .. }
         | Edit::EditTextBlock { .. }
+        | Edit::ArrangeTextBlock { .. }
         | Edit::EditPageImage { .. }
         | Edit::Flatten { .. } => {
             if p.modify() {
@@ -1561,6 +1575,9 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
                 ImageEdit::Arrange(_) => return Ok(()),
             };
             pdfcraft_edit::change_image(doc, *page, *index, &c)?;
+        }
+        Edit::ArrangeTextBlock { page, block, how } => {
+            pdfcraft_edit::arrange_block(doc, *page, *block, *how)?;
         }
         Edit::EditTextBlock { page, block, text, style } => {
             pdfcraft_edit::rewrite_block(doc, *page, *block, Some(text), style)?;

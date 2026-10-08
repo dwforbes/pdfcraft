@@ -738,7 +738,7 @@ fn font_size_before(ops: &[Op], at: usize) -> Option<f64> {
 /// stream. Documents sometimes draw a line more than once (fake bold, an invisible text layer),
 /// and a surviving copy would show the old text under the replaced line. Copies overlap a
 /// member's rect by more than half of the smaller rect; neighbouring lines share no area.
-fn coincident_ops(lines: &[TextLine], rects: &[[f64; 4]]) -> std::collections::HashMap<usize, std::collections::HashSet<usize>> {
+pub(crate) fn coincident_ops(lines: &[TextLine], rects: &[[f64; 4]]) -> std::collections::HashMap<usize, std::collections::HashSet<usize>> {
     let area = |r: [f64; 4]| ((r[2] - r[0]) * (r[3] - r[1])).max(0.0);
     let mut drop = std::collections::HashMap::new();
     for l in lines {

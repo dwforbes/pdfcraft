@@ -1009,6 +1009,22 @@ fn arrange_never_panics_on_odd_content() {
             let _ = arrange_image(&mut doc, 0, 0, how);
         }
     }
+    // Text: unclosed and nested objects, unbalanced tags, operators split across streams.
+    for c in [
+        &["BT /F1 12 Tf 60 700 Td (A) Tj 0 0 600 800 re f"][..],
+        &["BT /F1 12 Tf /P BDC 60 700 Td (A) Tj ET EMC EMC 0 0 600 800 re f"],
+        &["BT BT /F1 12 Tf 60 700 Td (A) Tj ET ET 0 0 600 800 re f BT /F1 12 Tf 60 680 Td (B) Tj"],
+        &["BT /F1 12 Tf 60 700 Td (A) Tj (B) Tj ET 0 0 600 800 re f"],
+        &["BT /F1 12 Tf 60 700", "Td (A) Tj ET 0 0 600 800 re f"],
+        &["BT /F1 12 Tf 60 700 Td (A) ' 2 3 (B) \" T* (C) TJ ET 0 0 600 800 re f"],
+    ] {
+        for how in [Arrange::BringToFront, Arrange::BringForward, Arrange::SendBackward, Arrange::SendToBack] {
+            for block in 0..3 {
+                let mut doc = arrange_page(c);
+                let _ = arrange_block(&mut doc, 0, block, how);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1034,4 +1050,91 @@ fn arrange_moves_added_images_as_whole_streams() {
     assert_eq!(objects(&doc), [a, rc, rb]);
     // Places never change.
     assert!(close(images::page_images(&doc, 0).unwrap()[2].rect, [150.0, 150.0, 250.0, 250.0]));
+}
+
+/// Every line's text, box and colour (to check nothing else moves).
+fn line_snapshot(doc: &Document) -> Vec<(String, [i64; 4], [i64; 3])> {
+    let r = |v: f64| (v * 100.0).round() as i64;
+    let mut v: Vec<_> = text::text_lines(doc, 0).unwrap().into_iter().map(|l| (l.text, l.rect.map(r), l.color.map(r))).collect();
+    v.sort();
+    v
+}
+
+fn painted_before(doc: &Document, a: &str, b: &str) -> bool {
+    let all = streams(doc, 0).join("\n");
+    all.find(a).unwrap() < all.find(b).unwrap()
+}
+
+#[test]
+fn arrange_brings_a_paragraph_over_a_bar() {
+    // A two-line paragraph, then a bar drawn over it, then unrelated text.
+    let mut doc = arrange_page(&[
+        "BT /F1 12 Tf 60 700 Td (Heading line) Tj 0 -14 Td (Second line) Tj ET 0 0 1 rg 40 690 300 30 re f BT /F1 12 Tf 60 500 Td (Other) Tj ET",
+    ]);
+    let before = line_snapshot(&doc);
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    let b = blocks.iter().position(|b| b.text.starts_with("Heading")).unwrap();
+    assert!(painted_before(&doc, "(Heading line)", "re f"));
+    arrange_block(&mut doc, 0, b, Arrange::BringToFront).unwrap();
+    assert!(painted_before(&doc, "re f", "(Heading line)") && painted_before(&doc, "re f", "(Second line)"), "{:?}", streams(&doc, 0));
+    assert_eq!(line_snapshot(&doc), before, "nothing moved on the page");
+    // And back under it.
+    let mut doc = reopen(&doc);
+    let b = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text.starts_with("Heading")).unwrap();
+    arrange_block(&mut doc, 0, b, Arrange::SendToBack).unwrap();
+    assert!(painted_before(&doc, "(Second line)", "re f"));
+    assert_eq!(line_snapshot(&doc), before);
+    // Text with nothing over it is already in front.
+    let o = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text == "Other").unwrap();
+    assert!(arrange_block(&mut doc, 0, o, Arrange::BringToFront).is_err());
+}
+
+#[test]
+fn arrange_splits_a_shared_text_object_and_keeps_the_rest_in_place() {
+    // One text object: a red paragraph (under the bar drawn later), then black text far below
+    // positioned relative to it, with a colour and spacing set in between.
+    let mut doc = arrange_page(&[
+        "BT /F1 12 Tf 1 0 0 rg 60 700 Td (Top para) Tj 0 g 2 Tc 0 -200 Td (Far away) Tj 0 -14 Td (And more) Tj ET 0 0 1 rg 40 690 300 30 re f",
+    ]);
+    let before = line_snapshot(&doc);
+    let b = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text == "Top para").unwrap();
+    arrange_block(&mut doc, 0, b, Arrange::BringToFront).unwrap();
+    assert!(painted_before(&doc, "re f", "(Top para)"), "{:?}", streams(&doc, 0));
+    assert!(painted_before(&doc, "(Far away)", "re f"), "the rest stays under the bar");
+    assert_eq!(line_snapshot(&doc), before, "{:?}", streams(&doc, 0));
+    let doc = reopen(&doc);
+    assert_eq!(line_snapshot(&doc), before);
+}
+
+#[test]
+fn arrange_moves_tagged_lines_with_their_mcids() {
+    let mut doc = arrange_page(&[
+        "BT /F1 12 Tf /P <</MCID 0>> BDC 60 700 Td (Tagged) Tj EMC /P <</MCID 1>> BDC 0 -300 Td (Elsewhere) Tj EMC ET 0 g 40 690 300 30 re f",
+    ]);
+    let before = line_snapshot(&doc);
+    let b = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text == "Tagged").unwrap();
+    arrange_block(&mut doc, 0, b, Arrange::BringToFront).unwrap();
+    let all = streams(&doc, 0).join("\n");
+    assert_eq!((all.matches("/MCID 0").count(), all.matches("/MCID 1").count()), (1, 1), "{all}");
+    assert!(all.find("/MCID 0").unwrap() > all.find("re f").unwrap(), "{all}");
+    assert_eq!(line_snapshot(&doc), before);
+}
+
+#[test]
+fn an_edited_paragraph_can_be_brought_back_over_a_bar() {
+    let mut doc = arrange_page(&["BT /F1 12 Tf 60 700 Td (Amount due) Tj ET 0 0 1 rg 40 650 300 40 re f"]);
+    // Rewritten to two lines, the second now under the bar.
+    rewrite_block(
+        &mut doc,
+        0,
+        0,
+        Some("Amount due this month, including the water charge"),
+        &BlockStyle { width: Some(150.0), ..Default::default() },
+    )
+    .unwrap();
+    let b = text::text_blocks(&doc, 0).unwrap().iter().position(|b| b.text.starts_with("Amount")).unwrap();
+    let before = line_snapshot(&doc);
+    arrange_block(&mut doc, 0, b, Arrange::BringToFront).unwrap();
+    assert!(painted_before(&doc, "re f", "Amount"), "{:?}", streams(&doc, 0));
+    assert_eq!(line_snapshot(&doc), before);
 }

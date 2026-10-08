@@ -596,7 +596,7 @@ pub use text::{BlockStyle, LineEdit, TextBlock, TextLine, replace_block, replace
 pub mod added;
 pub mod arrange;
 pub use added::{Added, AddedImage, AddedText, Align, Content, Family, add_content, delete_content, list_added, update_content};
-pub use arrange::{Arrange, arrange_image};
+pub use arrange::{Arrange, arrange_block, arrange_image};
 
 #[cfg(test)]
 mod tests;

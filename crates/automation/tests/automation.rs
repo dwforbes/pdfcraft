@@ -1045,6 +1045,34 @@ fn arranging_page_images_through_tools() {
 }
 
 #[test]
+fn arranging_text_through_tools() {
+    let dir = workdir("arrange-text");
+    let mut png = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png, 4, 4);
+        enc.set_color(png::ColorType::Rgb);
+        let mut w = enc.write_header().unwrap();
+        w.write_image_data(&[90u8; 48]).unwrap();
+    }
+    std::fs::write(dir.join("box.png"), png).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    // A picture added over "Page 1" (top-left-origin points).
+    ok(&mut a, "page_add_image", json!({ "doc": doc, "page": 1, "path": "box.png", "rect": [10, 120, 150, 160] }));
+    let front = |a: &mut Automation| a.call("text_arrange", &json!({ "doc": doc, "page": 1, "paragraph": 1, "action": "bring_to_front" }));
+    let r = ok(&mut a, "text_arrange", json!({ "doc": doc, "page": 1, "paragraph": 1, "action": "bring_to_front" }));
+    assert_eq!(r["undo"], "Bring text to front");
+    assert!(front(&mut a).is_err(), "already in front");
+    assert!(page_text(&mut a, doc)[0].contains("Page 1"));
+    ok(&mut a, "text_arrange", json!({ "doc": doc, "page": 1, "paragraph": 1, "action": "send_backward" }));
+    assert!(front(&mut a).is_ok());
+    assert!(matches!(
+        a.call("text_arrange", &json!({ "doc": doc, "page": 1, "paragraph": 9, "action": "send_backward" })),
+        Err(ToolError::InvalidArgs(_))
+    ));
+}
+
+#[test]
 fn auditing_space_through_tools() {
     let dir = workdir("audit");
     let mut a = auto(&dir);

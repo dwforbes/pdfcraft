@@ -460,6 +460,23 @@ impl Automation {
                 }
                 out
             }
+            "text_arrange" => {
+                let page = self.page(&a)?;
+                let n = self.doc(&a)?.text_blocks(page).len();
+                let k = a.int("paragraph")?;
+                if k < 1 || k as usize > n {
+                    return Err(ToolError::InvalidArgs(format!("paragraph {k} is out of range: page {} has {n} paragraphs", page + 1)));
+                }
+                use pdfcraft_engine::Arrange as A;
+                let how = match a.str("action")? {
+                    "bring_to_front" => A::BringToFront,
+                    "bring_forward" => A::BringForward,
+                    "send_backward" => A::SendBackward,
+                    "send_to_back" => A::SendToBack,
+                    other => return Err(ToolError::InvalidArgs(format!("unknown action {other:?}"))),
+                };
+                self.apply(&a, Edit::ArrangeTextBlock { page, block: k as usize - 1, how })?
+            }
             "text_edit" => {
                 let page = self.page(&a)?;
                 let n = self.doc(&a)?.text_lines(page).len();
