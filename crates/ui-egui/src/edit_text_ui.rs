@@ -2,7 +2,8 @@
 //! Click a paragraph to edit it in place (⌘Enter or clicking away applies and rewraps it to the
 //! box, Esc cancels); drag it to move it, or drag the handle on its right edge to rewrap it to a
 //! new width. Click an image to select it: drag to move, drag a corner to resize (keeping
-//! its proportions), right-click for rotate, flip, replace, save and delete; Delete removes it.
+//! its proportions), right-click for rotate, flip, arrange (bring to front, bring forward, send
+//! backward, send to back), replace, save and delete; Delete removes it.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Stroke};
 use pdfcraft_engine::Edit;
@@ -168,6 +169,16 @@ pub struct ImageSelection {
     pub index: usize,
     /// Dragging: the start point and, for a corner, the opposite corner (screen).
     drag: Option<(Pos2, Option<Pos2>)>,
+    /// The image selected (object, placement), so the selection follows it when arranging
+    /// changes its number.
+    image: Option<pdfcraft_engine::PageImage>,
+    /// Its context menu is open.
+    menu: bool,
+}
+
+/// The same image in the same place (arranging re-derives its placement, so allow rounding).
+fn same(a: &pdfcraft_engine::PageImage, b: &pdfcraft_engine::PageImage) -> bool {
+    a.object == b.object && a.matrix.iter().zip(b.matrix).all(|(x, y)| (x - y).abs() < 1e-4)
 }
 
 /// A paragraph box being dragged: moved, or (from the handle on its right edge) resized.
@@ -199,7 +210,8 @@ fn user_box(xf: &PageXform, info: &DocInfo, page: usize, r: Rect) -> [f64; 4] {
     [u[0].min(v[0]) as f64, u[1].min(v[1]) as f64, u[0].max(v[0]) as f64, u[1].max(v[1]) as f64]
 }
 
-/// Images on a page: select, move, resize, right-click. Returns `true` when the pointer was used.
+/// Images on a page: select, move, resize, right-click. Returns `true` when the pointer was used;
+/// sets `menu` while the selected image's context menu is showing (the page's own stays shut).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn image_input(
     ui: &egui::Ui,
@@ -210,6 +222,7 @@ pub(crate) fn image_input(
     images: &[pdfcraft_engine::PageImage],
     view: &mut DocView,
     action: &mut Option<ImageAction>,
+    menu: &mut bool,
 ) -> bool {
     let boxes: Vec<Rect> = images.iter().map(|im| xf.user_rect(info, page, im.rect.map(|v| v as f32))).collect();
     let painter = ui.painter();
@@ -217,6 +230,17 @@ pub(crate) fn image_input(
         painter.rect_stroke(*b, CornerRadius::ZERO, Stroke::new(0.75, ACCENT.gamma_multiply(0.35)), egui::StrokeKind::Outside);
     }
     let pointer = ui.input(|i| i.pointer.hover_pos());
+    // Arranging renumbers images: follow the selected one to its new number. Any other change
+    // (moving, turning) keeps the number and takes the image's new placement.
+    if let Some(s) = view.image_selection.as_mut().filter(|s| s.page == page) {
+        let at = images.get(s.index);
+        if !at.zip(s.image.as_ref()).is_some_and(|(a, b)| same(a, b)) {
+            match images.iter().position(|im| s.image.as_ref().is_some_and(|b| same(im, b))) {
+                Some(k) => s.index = k,
+                None => s.image = at.cloned(),
+            }
+        }
+    }
     let selected = view.image_selection.as_ref().filter(|s| s.page == page).map(|s| s.index).filter(|i| *i < boxes.len());
     for (i, b) in boxes.iter().enumerate() {
         let selected_box = selected == Some(i);
@@ -292,46 +316,69 @@ pub(crate) fn image_input(
             return true;
         }
     }
-    let Some(p) = pointer.filter(|p| xf.rect.contains(*p)) else { return false };
-    let Some(hit) = boxes.iter().rposition(|b| b.contains(p)) else { return false };
-    if selected != Some(hit) {
-        painter.rect_stroke(boxes[hit], CornerRadius::ZERO, Stroke::new(1.5, ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Outside);
+    let hit = pointer.filter(|p| xf.rect.contains(*p)).and_then(|p| boxes.iter().rposition(|b| b.contains(p)));
+    if let Some(hit) = hit {
+        if selected != Some(hit) {
+            painter.rect_stroke(boxes[hit], CornerRadius::ZERO, Stroke::new(1.5, ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Outside);
+        }
+        ui.ctx().set_cursor_icon(if selected == Some(hit) { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand });
+        if resp.clicked() || resp.secondary_clicked() {
+            view.image_selection = Some(ImageSelection { page, index: hit, drag: None, image: images.get(hit).cloned(), menu: false });
+        }
     }
-    ui.ctx().set_cursor_icon(if selected == Some(hit) { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand });
-    if resp.clicked() || resp.secondary_clicked() {
-        view.image_selection = Some(ImageSelection { page, index: hit, drag: None });
+    // A right-click on an image selects it and opens its menu, which stays this image's (not the
+    // page's) for as long as it is open, wherever the pointer goes.
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(resp));
+    let Some(sel) = view.image_selection.as_mut().filter(|s| s.page == page && s.index < images.len()) else { return hit.is_some() };
+    sel.menu = (sel.menu && open) || (resp.secondary_clicked() && hit == Some(sel.index));
+    if !sel.menu {
+        return hit.is_some();
     }
-    if selected == Some(hit) {
-        resp.context_menu(|ui| {
-            use pdfcraft_engine::ImageEdit as E;
-            let items: [(&str, Option<E>); 4] = [
-                (tl!("Rotate Clockwise"), Some(E::Rotate(1))),
-                (tl!("Rotate Counterclockwise"), Some(E::Rotate(3))),
-                (tl!("Flip Horizontal"), Some(E::Flip { horizontal: true })),
-                (tl!("Flip Vertical"), Some(E::Flip { horizontal: false })),
-            ];
-            for (label, change) in items {
+    *menu = true;
+    let index = sel.index;
+    resp.context_menu(|ui| {
+        use pdfcraft_engine::ImageEdit as E;
+        let items: [(&str, Option<E>); 4] = [
+            (tl!("Rotate Clockwise"), Some(E::Rotate(1))),
+            (tl!("Rotate Counterclockwise"), Some(E::Rotate(3))),
+            (tl!("Flip Horizontal"), Some(E::Flip { horizontal: true })),
+            (tl!("Flip Vertical"), Some(E::Flip { horizontal: false })),
+        ];
+        for (label, change) in items {
+            if ui.button(label).clicked() {
+                view.pending_edit = change.map(|c| Edit::EditPageImage { page, index, change: c });
+                ui.close();
+            }
+        }
+        ui.menu_button(tl!("Arrange"), |ui| {
+            use pdfcraft_engine::Arrange as A;
+            for (label, how) in [
+                (tl!("Bring to Front"), A::BringToFront),
+                (tl!("Bring Forward"), A::BringForward),
+                (tl!("Send Backward"), A::SendBackward),
+                (tl!("Send to Back"), A::SendToBack),
+            ] {
                 if ui.button(label).clicked() {
-                    view.pending_edit = change.map(|c| Edit::EditPageImage { page, index: hit, change: c });
+                    view.pending_edit = Some(Edit::EditPageImage { page, index, change: E::Arrange(how) });
                     ui.close();
                 }
             }
-            if ui.button(tl!("Replace Image…")).clicked() {
-                *action = Some(ImageAction::Replace(page, hit));
-                ui.close();
-            }
-            if ui.button(tl!("Save Image As…")).clicked() {
-                *action = Some(ImageAction::Save(page, hit));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button(tl!("Delete")).clicked() {
-                view.image_selection = None;
-                view.pending_edit = Some(Edit::EditPageImage { page, index: hit, change: E::Delete });
-                ui.close();
-            }
         });
-    }
+        if ui.button(tl!("Replace Image…")).clicked() {
+            *action = Some(ImageAction::Replace(page, index));
+            ui.close();
+        }
+        if ui.button(tl!("Save Image As…")).clicked() {
+            *action = Some(ImageAction::Save(page, index));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(tl!("Delete")).clicked() {
+            view.image_selection = None;
+            view.pending_edit = Some(Edit::EditPageImage { page, index, change: E::Delete });
+            ui.close();
+        }
+    });
     true
 }
 

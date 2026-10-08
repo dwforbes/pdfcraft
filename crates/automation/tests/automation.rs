@@ -1012,6 +1012,39 @@ fn editing_page_images_through_tools() {
 }
 
 #[test]
+fn arranging_page_images_through_tools() {
+    let dir = workdir("arrange-images");
+    for (name, v) in [("one.png", 60u8), ("two.png", 200u8)] {
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, 4, 4);
+            enc.set_color(png::ColorType::Rgb);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[v; 48]).unwrap();
+        }
+        std::fs::write(dir.join(name), png).unwrap();
+    }
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "page_add_image", json!({ "doc": doc, "page": 1, "path": "one.png", "rect": [100, 100, 200, 200] }));
+    ok(&mut a, "page_add_image", json!({ "doc": doc, "page": 1, "path": "two.png", "rect": [150, 150, 250, 250] }));
+    let rects = |a: &mut Automation| -> Vec<Value> {
+        ok(a, "page_images", json!({ "doc": doc, "page": 1 }))["images"].as_array().unwrap().iter().map(|i| i["rect"].clone()).collect()
+    };
+    let before = rects(&mut a);
+    assert_eq!(before.len(), 2);
+    let r = ok(&mut a, "image_edit", json!({ "doc": doc, "page": 1, "image": 1, "action": "bring_to_front" }));
+    assert_eq!(r["undo"], "Bring image to front");
+    assert_eq!(rects(&mut a), [before[1].clone(), before[0].clone()], "the first image is now drawn last");
+    // Already in front: an error, and nothing changes.
+    assert!(a.call("image_edit", &json!({ "doc": doc, "page": 1, "image": 2, "action": "bring_forward" })).is_err());
+    ok(&mut a, "image_edit", json!({ "doc": doc, "page": 1, "image": 2, "action": "send_to_back" }));
+    assert_eq!(rects(&mut a), before);
+    // Still the same added items, editable as before.
+    assert_eq!(ok(&mut a, "content_list", json!({ "doc": doc }))["count"], 2);
+}
+
+#[test]
 fn auditing_space_through_tools() {
     let dir = workdir("audit");
     let mut a = auto(&dir);

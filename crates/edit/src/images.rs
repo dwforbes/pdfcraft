@@ -21,8 +21,8 @@ pub struct PageImage {
     /// Pixel size.
     pub width: u32,
     pub height: u32,
-    stream: usize,
-    op: usize,
+    pub(crate) stream: usize,
+    pub(crate) op: usize,
 }
 
 fn streams(doc: &Document, page: &Dict) -> Vec<(Object, Vec<u8>)> {

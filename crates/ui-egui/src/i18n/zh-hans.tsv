@@ -400,6 +400,11 @@
 	Rotate Counterclockwise	逆时针旋转
 	Flip Horizontal	水平翻转
 	Flip Vertical	垂直翻转
+	Arrange	排列
+	Bring to Front	置于顶层
+	Bring Forward	上移一层
+	Send Backward	下移一层
+	Send to Back	置于底层
 	Replace Image…	替换图像…
 	Save Image As…	图像另存为…
 	Check for updates	检查更新

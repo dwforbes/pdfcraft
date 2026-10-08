@@ -709,6 +709,11 @@
 	Rotate Counterclockwise	反時計回りに回転
 	Flip Horizontal	左右反転
 	Flip Vertical	上下反転
+	Arrange	重ね順
+	Bring to Front	最前面へ移動
+	Bring Forward	前面へ移動
+	Send Backward	背面へ移動
+	Send to Back	最背面へ移動
 	Replace Image…	画像を置換…
 	Save Image As…	画像を別名で保存…
 	Check for updates	アップデートを確認

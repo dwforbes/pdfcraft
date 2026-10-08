@@ -12,7 +12,7 @@ use pdfcraft_fonts::{helvetica_width, literal, win_ansi};
 
 use crate::{EditError, check, contents, n, page_list, place_tagged};
 
-const TAG: &str = "Added";
+pub(crate) const TAG: &str = "Added";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Family {

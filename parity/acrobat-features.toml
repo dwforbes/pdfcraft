@@ -2079,11 +2079,11 @@ title = "Arrange objects (bring forward, send backward)"
 area = "C"
 tier = "P1"
 milestone = "M7"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "partial"
+commands = ["edit.edit_text"]
+tools = ["image_edit"]
+evidence = ["crates/edit/src/tests.rs::arrange_steps_images_through_the_stacking_order", "crates/edit/src/tests.rs::arrange_carries_clip_opacity_tags_and_mask_colour", "crates/edit/src/tests.rs::arrange_moves_added_images_as_whole_streams", "crates/edit/src/tests.rs::arrange_never_panics_on_odd_content", "crates/ui-egui/tests/editing.rs::arranging_an_image_from_its_context_menu", "crates/automation/tests/automation.rs::arranging_page_images_through_tools"]
+notes = "Images only (existing and added): right-click ▸ Arrange ▸ Bring to Front / Bring Forward / Send Backward / Send to Back, stepping past what the image overlaps; its clip, ExtGState, fill colour and tags move with it. Missing: arranging text boxes and vector objects (no selection for them yet), multi-object selection, greying out items that would do nothing (they report an error instead), images inside form XObjects or page marks, and no visual check against Acrobat yet."
 
 [[feature]]
 id = "edit.align-distribute-objects"

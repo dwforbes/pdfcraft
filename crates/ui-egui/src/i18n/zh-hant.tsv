@@ -358,6 +358,11 @@
 	Rotate Counterclockwise	逆時針旋轉
 	Flip Horizontal	水平翻轉
 	Flip Vertical	垂直翻轉
+	Arrange	排列
+	Bring to Front	移到最上層
+	Bring Forward	上移一層
+	Send Backward	下移一層
+	Send to Back	移到最下層
 	Replace Image…	替換圖片…
 	Save Image As…	圖片另存為…
 	Check for updates	檢驗更新

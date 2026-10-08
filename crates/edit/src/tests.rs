@@ -852,3 +852,186 @@ fn the_graphics_state_carries_over_between_content_streams() {
     let l = &text::text_lines(&doc, 0).unwrap()[0];
     assert!(close(l.rect[0], 100.0) && close(l.size, 10.0), "{l:?}");
 }
+
+/// A page with `content`, three 1 × 1 images /A, /B, /C, a stencil mask /M, a soft-mask
+/// ExtGState /G and Helvetica /F1.
+fn arrange_page(contents: &[&str]) -> Document {
+    let img =
+        "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\u{0}\nendstream";
+    let n = contents.len();
+    let refs: Vec<String> = (0..n).map(|i| format!("{} 0 R", 10 + i)).collect();
+    let mut objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents [{}] /Resources << /Font << /F1 4 0 R >> /XObject << /A 5 0 R /B 6 0 R /C 7 0 R /M 8 0 R >> /ExtGState << /G 9 0 R >> >> >>",
+            refs.join(" ")
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        img.into(),
+        img.into(),
+        img.into(),
+        "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask true /Length 1 >>\nstream\n\u{0}\nendstream".into(),
+        "<< /Type /ExtGState /ca 0.5 >>".into(),
+    ];
+    for c in contents {
+        objs.push(format!("<< /Length {} >>\nstream\n{c}\nendstream", c.len()));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offs = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offs.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let x = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offs {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1).as_bytes());
+    Document::open(Arc::new(out)).unwrap()
+}
+
+fn image_names(doc: &Document) -> Vec<String> {
+    images::page_images(doc, 0).unwrap().into_iter().map(|i| i.name).collect()
+}
+
+#[test]
+fn arrange_steps_images_through_the_stacking_order() {
+    // A, B and C overlap; each has its own placement.
+    let mut doc = arrange_page(&["q 100 0 0 100 100 100 cm /A Do Q q 100 0 0 100 150 150 cm /B Do Q q 100 0 0 100 120 120 cm /C Do Q"]);
+    let before = images::page_images(&doc, 0).unwrap();
+    assert_eq!(arrange_image(&mut doc, 0, 0, Arrange::BringForward).unwrap(), 1);
+    assert_eq!(image_names(&doc), ["B", "A", "C"]);
+    assert_eq!(arrange_image(&mut doc, 0, 1, Arrange::BringToFront).unwrap(), 2);
+    assert_eq!(image_names(&doc), ["B", "C", "A"]);
+    let doc2 = reopen(&doc);
+    let mut doc = doc2;
+    assert_eq!(arrange_image(&mut doc, 0, 2, Arrange::SendBackward).unwrap(), 1);
+    assert_eq!(image_names(&doc), ["B", "A", "C"]);
+    assert_eq!(arrange_image(&mut doc, 0, 1, Arrange::SendToBack).unwrap(), 0);
+    assert_eq!(image_names(&doc), ["A", "B", "C"]);
+    // Placements never change, only the order.
+    for i in images::page_images(&doc, 0).unwrap() {
+        let was = before.iter().find(|b| b.name == i.name).unwrap();
+        assert_eq!(i.matrix, was.matrix, "{}", i.name);
+    }
+    // Nothing to do at the ends.
+    assert!(arrange_image(&mut doc, 0, 0, Arrange::SendToBack).is_err());
+    assert!(arrange_image(&mut doc, 0, 2, Arrange::BringForward).is_err());
+    assert!(arrange_image(&mut doc, 0, 9, Arrange::BringForward).is_err());
+}
+
+#[test]
+fn arrange_only_stacks_against_what_the_image_overlaps() {
+    // C is far away: bringing A forward goes past B (which it overlaps) only.
+    let mut doc = arrange_page(&["q 100 0 0 100 100 100 cm /A Do Q q 100 0 0 100 500 600 cm /C Do Q q 100 0 0 100 150 150 cm /B Do Q"]);
+    arrange_image(&mut doc, 0, 0, Arrange::BringForward).unwrap();
+    assert_eq!(image_names(&doc), ["C", "B", "A"]);
+    // Nothing over C: it is already in front of all it overlaps.
+    let e = arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap_err();
+    assert!(e.to_string().contains("already in front"), "{e}");
+}
+
+#[test]
+fn arrange_carries_clip_opacity_tags_and_mask_colour() {
+    // A tagged, clipped, half-transparent stencil mask in red, under a filled rectangle and text.
+    let mut doc = arrange_page(&[
+        "/Figure <</MCID 0>> BDC q 0 0 300 300 re W n /G gs 1 0 0 rg 2 0 0 2 0 0 cm 100 0 0 100 50 50 cm /M Do Q EMC",
+        "0 0 1 rg 150 150 100 100 re f BT /F1 24 Tf 120 160 Td (Over) Tj ET",
+    ]);
+    arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap();
+    let s = streams(&doc, 0);
+    let all = s.join("\n");
+    // The tag moved with it (one MCID 0 on the page), and the old sequence is gone.
+    assert_eq!(all.matches("/MCID 0").count(), 1, "{all}");
+    let last = s.last().unwrap();
+    assert!(
+        last.contains("/MCID 0") && last.contains("re\nW\nn") && last.contains("/G gs") && last.contains("1 0 0 rg") && last.contains("/M Do"),
+        "{last}"
+    );
+    // After the text.
+    assert!(s.iter().position(|x| x.contains("(Over)")).unwrap() < s.len() - 1, "{s:?}");
+    // Same place.
+    let i = &images::page_images(&doc, 0).unwrap()[0];
+    assert!(close(i.rect, [100.0, 100.0, 300.0, 300.0]), "{:?}", i.rect);
+    // Back again: just before the rectangle, the first thing it overlaps.
+    let mut doc = reopen(&doc);
+    arrange_image(&mut doc, 0, 0, Arrange::SendToBack).unwrap();
+    let all = streams(&doc, 0).join("\n");
+    assert!(all.find("/M Do").unwrap() < all.find("150 150 100 100 re f").unwrap() && all.matches("/MCID 0").count() == 1, "{all}");
+    assert!(close(images::page_images(&doc, 0).unwrap()[0].rect, [100.0, 100.0, 300.0, 300.0]));
+}
+
+#[test]
+fn arrange_refuses_to_split_a_tag_and_skips_marks() {
+    let mut doc =
+        arrange_page(&["/Figure <</MCID 0>> BDC q 100 0 0 100 100 100 cm /A Do Q q 100 0 0 100 150 150 cm /B Do Q EMC 0 g 0 0 600 800 re f"]);
+    let e = arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap_err();
+    assert!(e.to_string().contains("tagged together"), "{e}");
+    // An optional-content layer without an MCID is simply repeated around the moved image.
+    let mut doc = arrange_page(&["/OC /L1 BDC q 100 0 0 100 100 100 cm /A Do Q q 100 0 0 100 150 150 cm /B Do Q EMC 0 g 120 120 50 50 re f"]);
+    arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap();
+    let all = streams(&doc, 0).join("\n");
+    assert_eq!(all.matches("/OC /L1 BDC").count(), 2, "{all}");
+    // A watermark drawn over everything isn't stacked against.
+    let mut doc = arrange_page(&["q 100 0 0 100 100 100 cm /A Do Q"]);
+    let wm = Watermark { text: "DRAFT".into(), ..Default::default() };
+    add_watermark(&mut doc, &[0], &wm, false).unwrap();
+    assert!(arrange_image(&mut doc, 0, 0, Arrange::BringToFront).is_err());
+}
+
+#[test]
+fn arrange_wraps_the_page_when_its_state_is_left_changed() {
+    // The content ends inside a clip and two unbalanced q's: the image goes after a q … Q wrapper.
+    let mut doc = arrange_page(&["q 100 0 0 100 100 100 cm /A Do Q q q 0 0 50 50 re W n 0 g 0 0 300 300 re f"]);
+    arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap();
+    let s = streams(&doc, 0);
+    assert_eq!(s.first().map(String::as_str), Some("q\n"), "{s:?}");
+    assert!(s.last().unwrap().starts_with("Q\nQ\nQ\nq\n"), "{s:?}");
+    assert!(close(images::page_images(&doc, 0).unwrap()[0].rect, [100.0, 100.0, 200.0, 200.0]));
+    reopen(&doc);
+}
+
+#[test]
+fn arrange_never_panics_on_odd_content() {
+    let deep = "q ".repeat(2000);
+    for c in [
+        "q 100 0 0 100 100 100 cm /A Do Q 0 0 0 0 0 0 cm 0 0 600 800 re f",
+        "BT /A Do 0 0 600 800 re f",
+        "q 100 0 0 100 100 100 cm /A Do Q EMC EMC Q Q 0 0 600 800 re f ] >> (",
+        "q 100 0 0 100 100 100 cm /A Do Q 1e400 0 0 1 0 0 cm 0 0 600 800 re f",
+        "/P BDC q 100 0 0 100 100 100 cm /A Do Q 0 0 600 800 re W f",
+        &format!("q 100 0 0 100 100 100 cm /A Do Q {deep} 0 0 600 800 re f"),
+    ] {
+        for how in [Arrange::BringToFront, Arrange::BringForward, Arrange::SendBackward, Arrange::SendToBack] {
+            let mut doc = arrange_page(&[c]);
+            let _ = arrange_image(&mut doc, 0, 0, how);
+        }
+    }
+}
+
+#[test]
+fn arrange_moves_added_images_as_whole_streams() {
+    // The page's own image /A, then two added images over it.
+    let mut doc = arrange_page(&["q 100 0 0 100 100 100 cm /A Do Q"]);
+    let b = pdfcraft_model::pages(&doc)[0].dict.get(b"Resources").map(|r| doc.resolve(r).as_dict().unwrap().clone()).unwrap();
+    let xo = b.get(b"XObject").unwrap().as_dict().unwrap().clone();
+    let (rb, rc) = (xo.get(b"B").unwrap().as_ref().unwrap(), xo.get(b"C").unwrap().as_ref().unwrap());
+    add_content(&mut doc, 0, &Content::Image(AddedImage::new([150.0, 150.0, 250.0, 250.0], rb))).unwrap();
+    add_content(&mut doc, 0, &Content::Image(AddedImage::new([120.0, 120.0, 220.0, 220.0], rc))).unwrap();
+    let objects = |doc: &Document| images::page_images(doc, 0).unwrap().into_iter().map(|i| i.object.unwrap()).collect::<Vec<_>>();
+    let a = objects(&doc)[0];
+    let added = |doc: &Document| list_added(doc).into_iter().map(|x| x.obj).collect::<Vec<_>>();
+    let (sb, sc) = (added(&doc)[0], added(&doc)[1]);
+    // Send the first added image to the back: below the page's own image, its stream unchanged.
+    assert_eq!(arrange_image(&mut doc, 0, 1, Arrange::SendToBack).unwrap(), 0);
+    assert_eq!(objects(&doc), [rb, a, rc]);
+    assert_eq!(added(&doc), [sb, sc], "the same streams, still editable");
+    // And forward again past both.
+    let mut doc = reopen(&doc);
+    assert_eq!(arrange_image(&mut doc, 0, 0, Arrange::BringToFront).unwrap(), 2);
+    assert_eq!(objects(&doc), [a, rc, rb]);
+    // Places never change.
+    assert!(close(images::page_images(&doc, 0).unwrap()[2].rect, [150.0, 150.0, 250.0, 250.0]));
+}

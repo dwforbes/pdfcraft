@@ -1140,3 +1140,73 @@ fn print_shortcut_offers_the_pages_picked_in_the_pages_panel() {
     h.get_by_label("Selected pages (2)");
     h.get_by_label("Sheet 1 of 2");
 }
+
+/// A 300 × 300 pt page drawing a red image, then a blue one overlapping it.
+fn overlapping_images() -> Vec<u8> {
+    let img = |rgb: &str| {
+        format!(
+            "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\n{rgb}>\nendstream"
+        )
+    };
+    let body = "q 150 0 0 150 20 120 cm /R Do Q q 150 0 0 150 100 60 cm /B Do Q";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /XObject << /R 5 0 R /B 6 0 R >> >> >>".into(),
+        format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()),
+        img("dc1e1e"),
+        img("1e3cdc"),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+#[test]
+fn arranging_an_image_from_its_context_menu() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("images.pdf", None, overlapping_images()).expect("opens");
+        app
+    });
+    h.run_steps(4);
+    let id = h.state().views[0].id;
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    // A point only the red image covers: user (40, 250) on a 300 pt square page.
+    let p = egui::pos2(r.left() + r.width() * 40.0 / 300.0, r.top() + r.height() * (300.0 - 250.0) / 300.0);
+    h.hover_at(p);
+    h.run_steps(1);
+    h.drag_at(p);
+    h.run_steps(1);
+    h.drop_at(p);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].image_selection.as_ref().map(|s| s.index), Some(0), "the red image is selected");
+    h.hover_at(p);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(3);
+    h.get_by_label_contains("Arrange").hover();
+    h.run_steps(2);
+    h.get_by_label("Bring to Front").click();
+    h.run_steps(4);
+    let doc = h.state().session.get(id).unwrap();
+    assert_eq!(doc.can_undo(), Some("Bring image to front"));
+    let names: Vec<String> = doc.page_images(0).into_iter().map(|i| i.name).collect();
+    assert_eq!(names, ["B", "R"], "red is drawn last");
+    // The selection followed the red image to its new number.
+    assert_eq!(h.state().views[0].image_selection.as_ref().map(|s| s.index), Some(1));
+}

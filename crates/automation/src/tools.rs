@@ -959,14 +959,14 @@ pub fn tools() -> Vec<ToolDef> {
             .ro()
             .cmd("edit.edit_text")
             .with(schema(json!({ "doc": doc(), "page": { "type": "integer", "minimum": 1 } }), &["doc", "page"])),
-        t("image_edit", "Edit an image", "Change one of a page's images (number from page_images): action move (rect: new box in top-left-origin points), rotate (quarters clockwise, default 1), flip_horizontal, flip_vertical, replace (path: an image file, drawn in the same place) or delete. Undoable.")
+        t("image_edit", "Edit an image", "Change one of a page's images (number from page_images): action move (rect: new box in top-left-origin points), rotate (quarters clockwise, default 1), flip_horizontal, flip_vertical, replace (path: an image file, drawn in the same place), delete, or arrange it among what it overlaps: bring_to_front, bring_forward, send_backward, send_to_back (the image's number changes with its drawing order; list again with page_images). Undoable.")
             .cmd("edit.edit_text")
             .with(schema(
                 json!({
                     "doc": doc(),
                     "page": { "type": "integer", "minimum": 1 },
                     "image": { "type": "integer", "minimum": 1 },
-                    "action": { "type": "string", "enum": ["move", "rotate", "flip_horizontal", "flip_vertical", "replace", "delete"] },
+                    "action": { "type": "string", "enum": ["move", "rotate", "flip_horizontal", "flip_vertical", "replace", "delete", "bring_to_front", "bring_forward", "send_backward", "send_to_back"] },
                     "rect": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
                     "quarters": { "type": "integer" },
                     "path": { "type": "string" },

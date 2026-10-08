@@ -38,8 +38,8 @@ pub struct TextLine {
     /// Whether new text in this font can only be shown by substituting another font (no
     /// Unicode mapping for the line, so nothing could be reused).
     pub decodable: bool,
-    stream: usize,
-    ops: Vec<usize>,
+    pub(crate) stream: usize,
+    pub(crate) ops: Vec<usize>,
     /// Where the line starts: text matrix (text space), the state there, and its `BT`.
     origin: Origin,
 }
@@ -173,7 +173,7 @@ fn content_streams(doc: &Document, page: &Dict) -> Vec<(Object, Vec<u8>)> {
 /// (ISO 32000-2 §7.8.2), so a piece can end with operands whose operator starts the next one,
 /// or start by closing a dictionary the previous one opened; those tokens belong to no operator
 /// parsed here and must stay where they are.
-fn splice(data: &[u8], ops: &[Op], mut edit: impl FnMut(usize) -> (Vec<Op>, bool)) -> Vec<u8> {
+pub(crate) fn splice(data: &[u8], ops: &[Op], mut edit: impl FnMut(usize) -> (Vec<Op>, bool)) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut at = 0;
     for (i, op) in ops.iter().enumerate() {

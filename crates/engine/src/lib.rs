@@ -39,7 +39,7 @@ pub use pdfcraft_forms::{
 };
 
 pub use pdfcraft_a11y as a11y;
-pub use pdfcraft_edit::{BlockStyle, PageImage, TextBlock, TextLine};
+pub use pdfcraft_edit::{Arrange, BlockStyle, PageImage, TextBlock, TextLine};
 pub use pdfcraft_measure as measure;
 pub use pdfcraft_xfa::Report as XfaLayout;
 
@@ -58,6 +58,8 @@ pub enum ImageEdit {
         name: String,
         bytes: Arc<Vec<u8>>,
     },
+    /// Move it in the stacking order (Arrange ▸ Bring to Front…).
+    Arrange(Arrange),
     Delete,
 }
 pub use pdfcraft_fonts::{MAX_SIGNATURE_CHARS, ScriptOutline, script_outline};
@@ -1126,6 +1128,10 @@ impl Edit {
                 ImageEdit::Rotate(_) => "Rotate image".into(),
                 ImageEdit::Flip { .. } => "Flip image".into(),
                 ImageEdit::Replace { .. } => "Replace image".into(),
+                ImageEdit::Arrange(Arrange::BringToFront) => "Bring image to front".into(),
+                ImageEdit::Arrange(Arrange::BringForward) => "Bring image forward".into(),
+                ImageEdit::Arrange(Arrange::SendBackward) => "Send image backward".into(),
+                ImageEdit::Arrange(Arrange::SendToBack) => "Send image to back".into(),
                 ImageEdit::Delete => "Delete image".into(),
             },
             Edit::AddHeaderFooter { replace: false, .. } => "Add header & footer".into(),
@@ -1535,6 +1541,9 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         Edit::AddOcrText { page, words } => {
             pdfcraft_edit::stamp(doc, *page, "OCR", pdfcraft_ocr::text_layer(words))?;
         }
+        Edit::EditPageImage { page, index, change: ImageEdit::Arrange(how) } => {
+            pdfcraft_edit::arrange_image(doc, *page, *index, *how)?;
+        }
         Edit::EditPageImage { page, index, change } => {
             let img = pdfcraft_edit::page_images(doc, *page)?
                 .into_iter()
@@ -1548,6 +1557,8 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
                 }
                 ImageEdit::Replace { name, bytes } => pdfcraft_edit::ImageChange::Replace(pdfcraft_create::image_xobject(doc, name, bytes)?.0),
                 ImageEdit::Delete => pdfcraft_edit::ImageChange::Delete,
+                // Handled above.
+                ImageEdit::Arrange(_) => return Ok(()),
             };
             pdfcraft_edit::change_image(doc, *page, *index, &c)?;
         }

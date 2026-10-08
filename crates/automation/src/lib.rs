@@ -371,6 +371,10 @@ impl Automation {
                         "flip_horizontal" => ImageEdit::Flip { horizontal: true },
                         "flip_vertical" => ImageEdit::Flip { horizontal: false },
                         "delete" => ImageEdit::Delete,
+                        "bring_to_front" => ImageEdit::Arrange(pdfcraft_engine::Arrange::BringToFront),
+                        "bring_forward" => ImageEdit::Arrange(pdfcraft_engine::Arrange::BringForward),
+                        "send_backward" => ImageEdit::Arrange(pdfcraft_engine::Arrange::SendBackward),
+                        "send_to_back" => ImageEdit::Arrange(pdfcraft_engine::Arrange::SendToBack),
                         "replace" => {
                             let path = self.resolve(a.str("path")?, false)?;
                             let bytes = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;

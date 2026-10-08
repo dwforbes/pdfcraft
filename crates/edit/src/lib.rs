@@ -594,7 +594,9 @@ pub use images::{ImageChange, PageImage, change_image, page_images, rect_to_rect
 pub mod text;
 pub use text::{BlockStyle, LineEdit, TextBlock, TextLine, replace_block, replace_line, rewrite_block, text_blocks, text_lines};
 pub mod added;
+pub mod arrange;
 pub use added::{Added, AddedImage, AddedText, Align, Content, Family, add_content, delete_content, list_added, update_content};
+pub use arrange::{Arrange, arrange_image};
 
 #[cfg(test)]
 mod tests;
