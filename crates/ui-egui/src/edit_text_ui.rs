@@ -38,6 +38,11 @@ pub struct LineEditor {
     /// horizontal scale (%), and what they were.
     pub extras: Extras,
     extras0: Extras,
+    /// Resized with the handles on the box's sides: the paragraph's new left and right edges in
+    /// user space (it rewraps to that width, and moves when the left edge did).
+    span: Option<[f32; 2]>,
+    /// The editor's frame on screen last frame, where its side handles were.
+    frame: Rect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,12 +106,18 @@ impl LineEditor {
                 .then_some(self.extras.line_spacing),
             char_spacing: (self.extras.char_spacing != self.extras0.char_spacing).then_some(self.extras.char_spacing),
             scale: (self.extras.scale != self.extras0.scale).then_some(self.extras.scale),
-            ..Default::default()
+            width: self.span.map(|[x0, x1]| f64::from(x1 - x0)),
+            offset: self
+                .span
+                .map(|[x0, _]| f64::from(x0 - self.source_rect[0].min(self.source_rect[2])))
+                .filter(|dx| dx.abs() > 0.01)
+                .map(|dx| [dx, 0.0]),
         }
     }
 
     /// After applying formatting: the paragraph now has it.
     pub fn applied(&mut self) {
+        self.span = None;
         self.look0 = self.look.clone();
         self.extras0 = self.extras;
         self.original = self.text.clone();
@@ -181,19 +192,38 @@ fn same(a: &pdfcraft_engine::PageImage, b: &pdfcraft_engine::PageImage) -> bool 
     a.object == b.object && a.matrix.iter().zip(b.matrix).all(|(x, y)| (x - y).abs() < 1e-4)
 }
 
-/// A paragraph box being dragged: moved, or (from the handle on its right edge) resized.
+/// A paragraph box being dragged: moved, or (from a handle on one of its sides) resized.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockDrag {
     page: usize,
     block: usize,
     /// Where the drag started (screen).
     start: Pos2,
-    resize: bool,
+    resize: Option<Side>,
 }
 
-/// The resize handle on a paragraph box's right edge (screen).
-fn width_handle(b: Rect) -> Rect {
-    Rect::from_center_size(Pos2::new(b.right(), b.center().y), egui::vec2(7.0, 14.0))
+/// Which side of a paragraph box a resize handle is on (as seen on screen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// The resize handles on a paragraph box's sides (screen): strips along the whole edge, so they
+/// are easy to grab, with a grip drawn in the middle.
+fn handles(b: Rect) -> [(Side, Rect); 2] {
+    let strip = |x: f32| Rect::from_center_size(Pos2::new(x, b.center().y), egui::vec2(14.0, b.height().max(18.0)));
+    [(Side::Left, strip(b.left())), (Side::Right, strip(b.right()))]
+}
+
+fn paint_grip(painter: &egui::Painter, strip: Rect, hot: bool) {
+    let grip = Rect::from_center_size(strip.center(), egui::vec2(6.0, strip.height().min(16.0)));
+    let fill = if hot { ACCENT } else { Color32::WHITE };
+    painter.rect(grip, CornerRadius::same(2), fill, Stroke::new(1.0, ACCENT), egui::StrokeKind::Middle);
+}
+
+fn handle_at(b: Rect, p: Pos2) -> Option<Side> {
+    handles(b).into_iter().find(|(_, h)| h.contains(p)).map(|(side, _)| side)
 }
 
 /// What a right-click on a selected image asks for.
@@ -412,20 +442,23 @@ pub(crate) fn page_input(
         && let (Some(b), Some(l)) = (boxes.get(d.block).copied(), lines.get(d.block))
     {
         let p = ui.input(|i| i.pointer.interact_pos()).unwrap_or(d.start);
-        let preview = if d.resize {
-            Rect::from_min_max(b.min, Pos2::new((b.right() + p.x - d.start.x).max(b.left() + 12.0), b.max.y))
-        } else {
-            b.translate(p - d.start)
+        let dx = p.x - d.start.x;
+        let preview = match d.resize {
+            Some(Side::Right) => Rect::from_min_max(b.min, Pos2::new((b.right() + dx).max(b.left() + 12.0), b.max.y)),
+            Some(Side::Left) => Rect::from_min_max(Pos2::new((b.left() + dx).min(b.right() - 12.0), b.min.y), b.max),
+            None => b.translate(p - d.start),
         };
         painter.rect_stroke(preview, CornerRadius::same(2), Stroke::new(1.5, ACCENT), egui::StrokeKind::Outside);
-        ui.ctx().set_cursor_icon(if d.resize { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grabbing });
+        ui.ctx().set_cursor_icon(if d.resize.is_some() { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grabbing });
         if resp.drag_stopped() || !ui.input(|i| i.pointer.any_down()) {
             view.block_drag = None;
             let (from, to) = (user_box(xf, info, page, b), user_box(xf, info, page, preview));
-            let style = if d.resize {
-                // The new width in user space: the box's change, added to the paragraph's own.
+            let style = if d.resize.is_some() {
+                // The new width in user space: the box's change, added to the paragraph's own; a
+                // moved left edge (in user space) moves the paragraph with it.
                 let width = (l.rect[2] - l.rect[0]) + (to[2] - to[0]) - (from[2] - from[0]);
-                pdfcraft_engine::BlockStyle { width: Some(width), ..Default::default() }
+                let dx = to[0] - from[0];
+                pdfcraft_engine::BlockStyle { width: Some(width), offset: (dx.abs() > 0.01).then_some([dx, 0.0]), ..Default::default() }
             } else {
                 pdfcraft_engine::BlockStyle { offset: Some([to[0] - from[0], to[1] - from[1]]), ..Default::default() }
             };
@@ -435,26 +468,33 @@ pub(crate) fn page_input(
         }
         return true;
     }
-    let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| xf.rect.contains(*p)) else { return false };
-    let Some(hit) = boxes.iter().rposition(|b| b.contains(p) || (upright && width_handle(*b).contains(p))) else { return false };
-    if active != Some(hit) {
-        painter.rect_stroke(boxes[hit], CornerRadius::same(2), Stroke::new(1.5, ACCENT), egui::StrokeKind::Outside);
-    }
-    let on_handle = upright && active.is_none() && width_handle(boxes[hit]).contains(p);
-    if upright && active.is_none() {
-        painter.rect(width_handle(boxes[hit]), CornerRadius::same(2), Color32::WHITE, Stroke::new(1.0, ACCENT), egui::StrokeKind::Middle);
-    }
-    ui.ctx().set_cursor_icon(if on_handle { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Text });
-    // Dragging a box (not while a paragraph is open for typing) moves it; from the handle, resizes it.
+    // Handles work while no paragraph is open (the open one has its own, on the editor).
+    let sizable = upright && active.is_none();
+    let in_box = |b: &Rect, p: Pos2| b.contains(p) || (sizable && handle_at(*b, p).is_some());
+    // Dragging a box (not while a paragraph is open for typing) moves it; from a handle, resizes
+    // it. Where the press began decides: by the time a drag starts, the pointer may have left
+    // the box (widening it, say).
     if resp.drag_started()
         && active.is_none()
         && let Some(o) = ui.input(|i| i.pointer.press_origin())
-        && let Some(block) = boxes.iter().rposition(|b| b.contains(o) || (upright && width_handle(*b).contains(o)))
+        && let Some(block) = boxes.iter().rposition(|b| in_box(b, o))
     {
-        let resize = upright && width_handle(boxes[block]).contains(o);
+        let resize = if sizable { handle_at(boxes[block], o) } else { None };
         view.block_drag = Some(BlockDrag { page, block, start: o, resize });
         return true;
     }
+    let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| xf.rect.contains(*p)) else { return false };
+    let Some(hit) = boxes.iter().rposition(|b| in_box(b, p)) else { return false };
+    if active != Some(hit) {
+        painter.rect_stroke(boxes[hit], CornerRadius::same(2), Stroke::new(1.5, ACCENT), egui::StrokeKind::Outside);
+    }
+    let on_handle = if sizable { handle_at(boxes[hit], p) } else { None };
+    if sizable {
+        for (side, strip) in handles(boxes[hit]) {
+            paint_grip(painter, strip, on_handle == Some(side));
+        }
+    }
+    ui.ctx().set_cursor_icon(if on_handle.is_some() { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Text });
     if resp.clicked() {
         open_editor(xf, page, lines, hit, boxes[hit], view);
     }
@@ -485,6 +525,8 @@ fn open_editor(xf: &PageXform, page: usize, lines: &[pdfcraft_engine::TextBlock]
         look0: look_of(l),
         extras: Extras::default(),
         extras0: Extras::default(),
+        span: None,
+        frame: b,
     });
 }
 
@@ -550,53 +592,99 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
     let page = view.line_editor.as_ref()?.page;
     let xf = view.page_xform(page)?;
     let viewport_right = view.viewport_rect().right();
+    // Side handles need the page upright or upside down: on a quarter-turned page the screen's
+    // horizontal is the paragraph's vertical. Upside down, screen-left is the paragraph's right.
+    let rotation = info.pages.get(page).map_or(0, |p| p.rotation);
+    let upright = rotation % 180 == 0;
+    let flipped = rotation == 180;
     let ed = view.line_editor.as_mut()?;
     // Reproject the source box every frame. The page may have been zoomed, scrolled or rotated
     // while the format panel was open.
-    ed.rect = xf.user_rect(info, ed.page, ed.source_rect).expand(2.0);
+    let src = ed.source_rect;
+    let source = xf.user_rect(info, ed.page, src);
+    let (x0, x1) = (src[0].min(src[2]), src[0].max(src[2]));
+    let span = ed.span.unwrap_or([x0, x1]);
+    ed.rect = xf.user_rect(info, ed.page, [span[0], src[1].min(src[3]), span[1], src[1].max(src[3])]).expand(2.0);
     let right = xf.rect.right().min(viewport_right) - 6.0;
-    ed.max_width = if ed.multiline { ed.rect.width() } else { (right - ed.rect.left()).max(ed.rect.width()) };
-    let scale = (ed.rect.width() / (ed.source_rect[2] - ed.source_rect[0]).abs().max(1.0)).max(0.01);
+    // Resized by hand: exactly that width. Otherwise a single line grows as you type.
+    ed.max_width = if ed.multiline || ed.span.is_some() { ed.rect.width() } else { (right - ed.rect.left()).max(ed.rect.width()) };
+    // Screen pixels per point, from the paragraph's own box (not the resized one).
+    let scale = (source.width() / (x1 - x0).max(1.0)).max(0.01);
     ed.size = (ed.look.size as f32 * scale).clamp(8.0, 72.0);
     let font = editor_font(&ed.look, ed.size);
     let text_color = color32(ed.look.color);
+    // A press on a side handle takes the pointer away from the text, but isn't clicking away:
+    // the paragraph stays open.
+    let gripping = upright && ctx.input(|i| i.pointer.any_down() && i.pointer.press_origin().is_some_and(|o| handle_at(ed.frame, o).is_some()));
     let mut done = None;
     egui::Area::new(egui::Id::new("edit-text-line")).order(egui::Order::Foreground).fixed_pos(Pos2::new(ed.rect.left(), ed.rect.top())).show(
         ctx,
         |ui| {
             // The box follows the text as you type: as wide as the longest drafted line needs
             // (up to what the rewrite allows), so new content grows the box instead of wrapping
-            // inside the old one.
-            let mut width = ed.rect.width().max(120.0);
-            if ed.max_width > width {
+            // inside the old one. Resized by hand, the text wraps to the box as it will on the page.
+            let mut width = if ed.span.is_some() { (ed.rect.width() - 4.0).max(12.0) } else { ed.rect.width().max(120.0) };
+            if ed.span.is_none() && ed.max_width > width {
                 let needed = ui.fonts_mut(|f| {
                     ed.text.lines().map(|l| f.layout_no_wrap(l.to_owned(), font.clone(), text_color).size().x).fold(0.0_f32, f32::max)
                 }) + 8.0;
                 width = width.max(needed).min(ed.max_width);
             }
-            egui::Frame::NONE.fill(Color32::WHITE).stroke(Stroke::new(1.5, ACCENT)).inner_margin(egui::Margin::symmetric(2, 0)).show(ui, |ui| {
-                let rows = ed.text.lines().count().max(1);
-                let r = ui.add(
-                    egui::TextEdit::multiline(&mut ed.text)
-                        .id(egui::Id::new("edit-text-line-input"))
-                        .font(font.clone())
-                        .text_color(text_color)
-                        .frame(egui::Frame::NONE)
-                        .desired_width(width)
-                        .desired_rows(rows),
-                );
-                if ed.focus {
-                    r.request_focus();
-                    ed.focus = false;
+            // Floating areas are capped at egui's default area size (600 px wide); at high zoom a
+            // paragraph is wider than that and would wrap early.
+            ui.set_max_width(width + 8.0);
+            let frame =
+                egui::Frame::NONE.fill(Color32::WHITE).stroke(Stroke::new(1.5, ACCENT)).inner_margin(egui::Margin::symmetric(2, 0)).show(ui, |ui| {
+                    let rows = ed.text.lines().count().max(1);
+                    let r = ui.add(
+                        egui::TextEdit::multiline(&mut ed.text)
+                            .id(egui::Id::new("edit-text-line-input"))
+                            .font(font.clone())
+                            .text_color(text_color)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(width)
+                            .desired_rows(rows),
+                    );
+                    if ed.focus {
+                        r.request_focus();
+                        ed.focus = false;
+                    }
+                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    let apply = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+                    if esc {
+                        done = Some(false);
+                    } else if apply || (r.lost_focus() && !outside && !gripping) {
+                        done = Some(true);
+                    }
+                });
+            ed.frame = frame.response.rect;
+            if !upright {
+                return;
+            }
+            // Drag a side to set the paragraph's width (and, from the left, where it starts).
+            for (side, strip) in handles(ed.frame) {
+                let h = ui.interact(strip, egui::Id::new(("edit-text-side", side == Side::Left)), egui::Sense::drag());
+                paint_grip(ui.painter(), strip, h.hovered() || h.dragged());
+                if h.hovered() || h.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 }
-                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                let apply = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-                if esc {
-                    done = Some(false);
-                } else if apply || (r.lost_focus() && !outside) {
-                    done = Some(true);
+                if h.dragged() {
+                    let du = h.drag_delta().x / scale * if flipped { -1.0 } else { 1.0 };
+                    let mut s = ed.span.unwrap_or([x0, x1]);
+                    // Upside down, the screen's left side is the paragraph's right edge.
+                    let left_edge = (side == Side::Left) != flipped;
+                    let narrowest = (ed.look.size as f32).max(12.0);
+                    if left_edge {
+                        s[0] = (s[0] + du).min(s[1] - narrowest);
+                    } else {
+                        s[1] = (s[1] + du).max(s[0] + narrowest);
+                    }
+                    ed.span = Some(s);
                 }
-            });
+                if h.drag_stopped() {
+                    ed.focus = true;
+                }
+            }
         },
     );
     match done {

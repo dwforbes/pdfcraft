@@ -1818,8 +1818,8 @@ milestone = "M7"
 status = "shipped"
 commands = ["edit.edit_text"]
 tools = ["text_edit"]
-evidence = ["crates/edit/src/tests.rs::paragraphs_move_and_rewrap_to_a_new_width", "crates/ui-egui/tests/editing.rs::dragging_a_paragraph_moves_it_and_its_edge_rewraps_it", "crates/automation/tests/automation.rs::editing_existing_text_through_tools"]
-notes = "existing paragraphs: drag the box to move it, drag the handle on its right edge to rewrap it to a new width (upright pages); the move is applied in page space through the paragraph's CTM, in its own q … Q; a click still opens it for typing (#40)"
+evidence = ["crates/edit/src/tests.rs::paragraphs_move_and_rewrap_to_a_new_width", "crates/ui-egui/tests/editing.rs::dragging_a_paragraph_moves_it_and_its_edge_rewraps_it", "crates/ui-egui/tests/editing.rs::the_left_handle_widens_and_moves_a_paragraph", "crates/ui-egui/tests/editing.rs::widening_the_open_paragraph_from_its_side_handle_rewraps_it", "crates/ui-egui/tests/editing.rs::the_open_editor_is_as_wide_as_the_paragraph_at_high_zoom", "crates/automation/tests/automation.rs::editing_existing_text_through_tools"]
+notes = "existing paragraphs: drag the box to move it; drag the grip on either side to set its width and rewrap it (the left side also moves where it starts), both on a closed box and on the open editor while typing, which rewraps live (upright and upside-down pages); the move is applied in page space through the paragraph's CTM, in its own q … Q; a click still opens it for typing (#40). Missing: height and corner handles, side handles on quarter-turned pages, snapping and guides"
 
 [[feature]]
 id = "edit.paragraph-detection"

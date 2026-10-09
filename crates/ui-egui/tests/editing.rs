@@ -1263,3 +1263,126 @@ fn arranging_a_paragraph_from_its_context_menu() {
     // No comment menu came up instead, and nothing else is open.
     assert!(h.query_by_label("Add a sticky note here").is_none());
 }
+
+/// A 300 × 300 pt page with Helvetica as /F1 drawing `body`.
+fn text_page(body: &str) -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".into(),
+        format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+/// Edit text & images on a two-line paragraph; returns the harness and a user → screen mapping.
+fn two_line_paragraph() -> (Harness<'static, PdfCraftApp>, impl Fn(f32, f32) -> egui::Pos2) {
+    let pdf = text_page("BT /F1 12 Tf 40 200 Td (one two three four) Tj 0 -14 Td (five six seven eight) Tj ET");
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("para.pdf", None, pdf.clone()).expect("opens");
+        app
+    });
+    h.run_steps(4);
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    (h, move |x: f32, y: f32| egui::pos2(r.left() + r.width() * x / 300.0, r.top() + r.height() * (300.0 - y) / 300.0))
+}
+
+#[test]
+fn widening_the_open_paragraph_from_its_side_handle_rewraps_it() {
+    let (mut h, at) = two_line_paragraph();
+    let id = h.state().views[0].id;
+    let block = h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    assert_eq!(block.lines.len(), 2);
+    // Open it, then drag the editor's right side out to x = 290 pt.
+    let mid = (block.rect[1] + block.rect[3]) as f32 / 2.0;
+    let p = at(60.0, mid);
+    h.hover_at(p);
+    h.run_steps(1);
+    h.drag_at(p);
+    h.run_steps(1);
+    h.drop_at(p);
+    h.run_steps(3);
+    assert!(h.state().views[0].line_editor.is_some(), "open for editing");
+    // The editor's frame (and its grip) sits just outside the paragraph's box.
+    let edge = at(block.rect[2] as f32, mid) + egui::vec2(7.0, 0.0);
+    drag(&mut h, edge, at(290.0, mid));
+    assert!(h.state().views[0].line_editor.is_some(), "pressing the handle didn't close the paragraph");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(4);
+    let doc = h.state().session.get(id).unwrap();
+    assert_eq!(doc.can_undo(), Some("Edit text"));
+    let now = doc.text_blocks(0)[0].clone();
+    assert_eq!(now.lines.len(), 1, "rewrapped to the wider box: {now:?}");
+    assert!((now.rect[0] - block.rect[0]).abs() < 0.5, "the left edge stays: {:?} → {:?}", block.rect, now.rect);
+}
+
+#[test]
+fn the_left_handle_widens_and_moves_a_paragraph() {
+    let (mut h, at) = two_line_paragraph();
+    let id = h.state().views[0].id;
+    let block = h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    let mid = (block.rect[1] + block.rect[3]) as f32 / 2.0;
+    // Without opening it: the left side's strip, dragged 30 pt to the left.
+    let edge = at(block.rect[0] as f32, mid) - egui::vec2(2.0, 0.0);
+    let to = edge - (at(30.0, 0.0) - at(0.0, 0.0));
+    h.hover_at(edge);
+    h.run_steps(1);
+    h.drag_at(edge);
+    h.run_steps(1);
+    for k in 1..=5 {
+        h.hover_at(edge + (to - edge) * (k as f32 / 5.0));
+        h.run_steps(1);
+    }
+    h.drop_at(to);
+    h.run_steps(1);
+    h.run_steps(4);
+    let doc = h.state().session.get(id).unwrap();
+    assert_eq!(doc.can_undo(), Some("Edit text"));
+    let now = doc.text_blocks(0)[0].clone();
+    assert!((now.rect[0] - (block.rect[0] - 30.0)).abs() < 3.0, "moved left: {:?} → {:?}", block.rect, now.rect);
+    assert_eq!(now.text, block.text);
+}
+
+#[test]
+fn the_open_editor_is_as_wide_as_the_paragraph_at_high_zoom() {
+    let pdf = text_page("BT /F1 12 Tf 20 200 Td (one two three four five six seven eight nine ten eleven) Tj 0 -14 Td (twelve) Tj ET");
+    let mut h = Harness::builder().with_size(egui::vec2(2400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("wide.pdf", None, pdf.clone()).expect("opens");
+        app
+    });
+    h.run_steps(4);
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let block = h.state().session.get(h.state().views[0].id).unwrap().text_blocks(0)[0].clone();
+    let k = r.width() / 300.0;
+    let width = (block.rect[2] - block.rect[0]) as f32 * k;
+    assert!(width > 700.0, "the paragraph is wider than egui's default area ({width} px)");
+    let p = egui::pos2(r.left() + 40.0 * k, r.top() + (300.0 - 203.0) * k);
+    h.hover_at(p);
+    h.run_steps(1);
+    h.drag_at(p);
+    h.run_steps(1);
+    h.drop_at(p);
+    h.run_steps(3);
+    let input = h.get_by_role(Role::MultilineTextInput);
+    let shown = input.rect().width() as f32;
+    assert!(shown >= width - 12.0, "the editor is {shown} px wide for a {width} px paragraph");
+}
