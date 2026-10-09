@@ -538,8 +538,8 @@ milestone = "M4"
 status = "shipped"
 commands = []
 tools = []
-evidence = ["crates/ui-egui/tests/recovery.rs::a_crashed_session_is_offered_and_recovered_unsaved", "crates/ui-egui/tests/recovery.rs::discarding_removes_the_autosaves", "crates/engine/src/tests.rs::recovered_documents_reopen_unsaved_at_their_original_path"]
-notes = ""
+evidence = ["crates/ui-egui/tests/recovery.rs::a_crashed_session_is_offered_and_recovered_unsaved", "crates/ui-egui/tests/recovery.rs::discarding_removes_the_autosaves", "crates/engine/src/tests.rs::recovered_documents_reopen_unsaved_at_their_original_path", "crates/ui-egui/tests/recovery.rs::a_running_copys_autosaves_are_not_offered_to_another_copy", "crates/ui-egui/tests/recovery.rs::a_lock_exists_only_while_a_session_has_something_to_recover"]
+notes = "Several running copies share the recovery folder: a session holds an OS lock while it has entries, so only entries of sessions that ended (crashed) are offered; a running copy's are never offered, recovered, discarded or cleaned up by another. Checked across processes (SIGKILL) by hand, not in CI."
 
 [[feature]]
 id = "core.encrypted-autosave"

@@ -227,3 +227,74 @@ fn control_click_effects_are_visible_when_the_reply_arrives() {
     assert_eq!(files_in(&s), 0, "discarded by the time the click is answered");
     assert_eq!(call(&mut h, "ui.state", serde_json::json!({}))["dialog"], serde_json::Value::Null);
 }
+
+#[test]
+fn a_running_copys_autosaves_are_not_offered_to_another_copy() {
+    let s = store("live");
+    // Copy A is running, with an unsaved change autosaved.
+    let mut a = PdfCraftApp::new();
+    a.enable_recovery(s.clone());
+    a.open_bytes("mine.pdf", Some("/docs/mine.pdf".into()), fixture(2)).unwrap();
+    assert!(a.apply_edit(Edit::DeletePages { pages: vec![0] }));
+    a.autosave_now();
+    assert_eq!(s.list().len(), 1);
+    // Copy B starts: nothing to recover, so no dialog, and A's entry stays.
+    let mut b = PdfCraftApp::new();
+    b.enable_recovery(s.clone());
+    assert!(b.recoverable.is_empty(), "A is still running");
+    assert!(s.recoverable().is_empty());
+    s.clear();
+    assert_eq!(s.list().len(), 1, "Discard all doesn't touch A's entry");
+    // B's own autosaves don't disturb A's either.
+    b.open_bytes("other.pdf", None, fixture(1)).unwrap();
+    assert!(b.apply_edit(Edit::RotatePages { pages: vec![0], degrees: 90 }));
+    b.autosave_now();
+    assert_eq!(s.list().len(), 2);
+    drop(b);
+    // A crashes: its entry becomes recoverable, by a later copy that is the only one running.
+    drop(a);
+    let mut c = PdfCraftApp::new();
+    c.enable_recovery(s.clone());
+    let names: Vec<String> = c.recoverable.iter().map(|m| m.name.clone()).collect();
+    assert!(names.contains(&"mine.pdf".to_string()), "{names:?}");
+    // Recovering moves it under C's session: a fourth copy leaves it alone while C runs.
+    let key = c.recoverable.iter().find(|m| m.name == "mine.pdf").unwrap().key.clone();
+    c.recover(&[key]);
+    assert_eq!(c.views.len(), 1);
+    let mut d = PdfCraftApp::new();
+    d.enable_recovery(s.clone());
+    assert!(!d.recoverable.iter().any(|m| m.name == "mine.pdf"), "C owns it now");
+    drop(c);
+    let _ = std::fs::remove_dir_all(s.dir());
+}
+
+#[test]
+fn a_lock_exists_only_while_a_session_has_something_to_recover() {
+    let s = store("lockfile");
+    let locks = |s: &RecoveryStore| {
+        std::fs::read_dir(s.dir()).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "lock")).count()).unwrap_or(0)
+    };
+    let mut app = PdfCraftApp::new();
+    app.enable_recovery(s.clone());
+    app.open_bytes("a.pdf", None, fixture(1)).unwrap();
+    assert!(app.apply_edit(Edit::RotatePages { pages: vec![0], degrees: 90 }));
+    app.autosave_now();
+    assert_eq!(locks(&s), 1);
+    app.close_tab(0);
+    assert_eq!((locks(&s), files_in(&s)), (0, 0), "nothing to recover, nothing left");
+    // What a process that died leaves: its entry and its lock file, which the OS unlocked.
+    let mut died = PdfCraftApp::new();
+    died.enable_recovery(s.clone());
+    died.open_bytes("b.pdf", None, fixture(1)).unwrap();
+    assert!(died.apply_edit(Edit::RotatePages { pages: vec![0], degrees: 90 }));
+    died.autosave_now();
+    let session = s.list()[0].key.rsplit_once('-').unwrap().0.to_string();
+    drop(died);
+    std::fs::write(s.dir().join(format!("{session}.lock")), b"").unwrap();
+    assert_eq!(locks(&s), 1);
+    let mut next = PdfCraftApp::new();
+    next.enable_recovery(s.clone());
+    assert_eq!(next.recoverable.len(), 1, "offered: its session isn't running");
+    assert_eq!(locks(&s), 0, "and the stale lock file is swept");
+    let _ = std::fs::remove_dir_all(s.dir());
+}

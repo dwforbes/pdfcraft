@@ -451,6 +451,9 @@ pub struct PdfCraftApp {
     /// Entries left by a previous session, offered in the Recovery dialog.
     pub recoverable: Vec<RecoveryMeta>,
     recovery_keys: std::collections::HashMap<DocId, String>,
+    /// This session's id in recovery keys, and its lock while it has entries.
+    recovery_session: String,
+    recovery_lock: Option<recovery::SessionLock>,
     last_autosave: f64,
     pending_recovered: Option<RecoveryMeta>,
     allow_quit: bool,
@@ -640,6 +643,8 @@ impl PdfCraftApp {
             recovery: None,
             recoverable: Vec::new(),
             recovery_keys: Default::default(),
+            recovery_session: recovery::new_session_id(),
+            recovery_lock: None,
             last_autosave: 0.0,
             pending_recovered: None,
             allow_quit: false,
